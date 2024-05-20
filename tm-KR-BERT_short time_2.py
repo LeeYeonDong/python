@@ -4,6 +4,7 @@ from bertopic import BERTopic
 from transformers import BertTokenizer, BertModel
 from transformers import BertTokenizerFast, AlbertModel
 import numpy as np
+from sklearn.feature_extraction.text import CountVectorizer
 import torch
 import re
 import time
@@ -14,8 +15,11 @@ from gensim.models.coherencemodel import CoherenceModel
 from gensim.corpora.dictionary import Dictionary
 from gensim import corpora
 from konlpy.tag import Okt
-from sklearn.feature_extraction.text import CountVectorizer
+from itertools import product
+from gensim import matutils
+import numpy as np
 from sklearn.metrics import silhouette_score
+import matplotlib.pyplot as plt
 
 
 # GPU 사용 가능 여부 확인
@@ -31,31 +35,32 @@ start_time = time.time()
 
 # 데이터 로드
 df = pd.read_csv('D:/대학원/논문/소논문/부동산_토픽모델링/부동산_수정_df.csv', encoding='utf-8')
-#df = df.sample(n=50000) # test
+# df = df.sample(n=500) # test
+df = df.sample(frac=0.1) # test
 # 숫자로 시작하지 않는 '날짜' 열을 가진 관측치 추출
-new_data = df[~df['날짜'].str.match(r'^\d')]
-new_data.shape
+# new_data = df[~df['날짜'].str.match(r'^\d')]
+# new_data.shape
 
-# 기존 데이터 프레임에서 해당 관측치 제거
-df = df.drop(new_data.index)
-df.shape
+# # 기존 데이터 프레임에서 해당 관측치 제거
+# df = df.drop(new_data.index)
+# df.shape
 
-# 언론사 관측치를 링크로 옮기기
-new_data['링크'] = new_data['언론사']
-# 날짜 관측치를 언론사로 옮기기
-new_data['언론사'] = new_data['날짜']
-# 제목에서 가장 마지막의 쉼표 뒤의 문자를 날짜로 옮기기
-new_data['날짜'] = new_data['제목'].str.extract(r',([^,]+)$')[0]
-new_data['날짜'] = new_data['날짜'].str.strip('"')
-# 제목에서 가장 마지막의 쉼표 앞의 문자만 남기기
-new_data['제목'] = new_data['제목'].str.rsplit(',', n=1).str[0]
-# 기존 데이터 프레임과 새 데이터 프레임 결합
-df = pd.concat([df, new_data], ignore_index=True)
-# 결합된 데이터 프레임을 날짜 순으로 정렬
-df['날짜'] = df['날짜'].str.replace('오후', 'PM').str.replace('오전', 'AM') # '오후'와 '오전'을 'PM'과 'AM'으로 변환
-df['날짜'] = pd.to_datetime(df['날짜'], format='%Y.%m.%d. %p %I:%M').dt.strftime('%Y-%m-%d')
-df = df.sort_values(by='날짜')
-df['날짜'] = df['날짜'].str.split(' ').str[0]
+# # 언론사 관측치를 링크로 옮기기
+# new_data['링크'] = new_data['언론사']
+# # 날짜 관측치를 언론사로 옮기기
+# new_data['언론사'] = new_data['날짜']
+# # 제목에서 가장 마지막의 쉼표 뒤의 문자를 날짜로 옮기기
+# new_data['날짜'] = new_data['제목'].str.extract(r',([^,]+)$')[0]
+# new_data['날짜'] = new_data['날짜'].str.strip('"')
+# # 제목에서 가장 마지막의 쉼표 앞의 문자만 남기기
+# new_data['제목'] = new_data['제목'].str.rsplit(',', n=1).str[0]
+# # 기존 데이터 프레임과 새 데이터 프레임 결합
+# df = pd.concat([df, new_data], ignore_index=True)
+# # 결합된 데이터 프레임을 날짜 순으로 정렬
+# df['날짜'] = df['날짜'].str.replace('오후', 'PM').str.replace('오전', 'AM') # '오후'와 '오전'을 'PM'과 'AM'으로 변환
+# df['날짜'] = pd.to_datetime(df['날짜'], format='%Y.%m.%d. %p %I:%M').dt.strftime('%Y-%m-%d')
+# df = df.sort_values(by='날짜')
+# df['날짜'] = df['날짜'].str.split(' ').str[0]
 
 # '제목' 열에서 한글만 남기기
 df['제목'] = df['제목'].apply(lambda x: re.sub(r'[^가-힣\s]', '', str(x)) if x is not None else x)
@@ -90,65 +95,107 @@ df.isnull().sum()
 
 # 비문자열 데이터 타입 변환
 df['제목'] = df['제목'].astype(str)
+type(df['제목'])
 
 # KR-BERT 모델 초기화
 tokenizer = BertTokenizer.from_pretrained('snunlp/KR-BERT-char16424')
 model = BertModel.from_pretrained('snunlp/KR-BERT-char16424')
 
 # albert-base-kor
-#tokenizer_albert = BertTokenizerFast.from_pretrained("kykim/albert-kor-base")
-#model_albert = AlbertModel.from_pretrained("kykim/albert-kor-base")
+# tokenizer_albert = BertTokenizerFast.from_pretrained("kykim/albert-kor-base")
+# model_albert = AlbertModel.from_pretrained("kykim/albert-kor-base")
 
-# 문서 임베딩을 생성하는 함수
-def embed_documents(documents, model, tokenizer):
-    # 여기에 문서 임베딩 생성 로직 구현
-    # 예시로는 문서를 토크나이즈하고 모델을 통해 임베딩 생성
-    pass
+# 문서 임베딩 함수 정의 (배치 처리 포함):
+def embed_documents(documents, model, tokenizer, device='cuda', batch_size=16):
+    model.to(device)
+    embeddings = []
+    for i in range(0, len(documents), batch_size):
+        batch_docs = documents[i:i+batch_size]
+        inputs = tokenizer(batch_docs, return_tensors='pt', padding=True, truncation=True, max_length=512).to(device)
+        with torch.no_grad():
+            outputs = model(**inputs)
+        batch_embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
+        embeddings.append(batch_embeddings)
+    return np.vstack(embeddings)
 
-# Grid Search 실행 함수
-def run_grid_search(documents):
-    best_coherence = -np.inf
-    best_params = None
+def calculate_coherence_score(topics, documents):
+    """Coherence Score 계산 함수."""
+    # 문서를 토큰화합니다.
+    texts = [doc.split() for doc in documents]
+
+    # Gensim의 Dictionary 객체를 생성합니다.
+    dictionary = Dictionary(texts)
+
+    # Corpus 생성
+    corpus = [dictionary.doc2bow(text) for text in texts]
+
+    # Coherence 모델을 생성 및 평가 : 토픽의 일관성
+    coherence_model = CoherenceModel(topics=topics, texts=texts, dictionary=dictionary, corpus=corpus, coherence='c_v')
+    return coherence_model.get_coherence()
+
+
+def grid_search_bertopic(documents, tokenizer, model):
+    """BERTopic에 대한 그리드 서치 실행 함수."""
+    results = []
+    # 문서 임베딩
+    document_embeddings = embed_documents(documents, model, tokenizer)
     
     # UMAP과 HDBSCAN 파라미터 조합
-    umap_params_list = [
-        {'n_neighbors': 15, 'n_components': 5, 'min_dist': 0.0, 'metric': 'cosine'},
-        # 여기에 더 많은 UMAP 파라미터 조합 추가 가능
+    umap_params = [
+        {"n_neighbors": n, "n_components": c, "metric": m, "min_dist": d}
+        for n, c, m, d in product([15, 30, 50], [5, 15, 25], ['euclidean', 'cosine'], [0.0, 0.1, 0.2])
     ]
-    
-    hdbscan_params_list = [
-        {'min_cluster_size': 5, 'metric': 'euclidean'},
-        # 여기에 더 많은 HDBSCAN 파라미터 조합 추가 가능
-    ]
-    
-    for umap_params in umap_params_list:
-        for hdbscan_params in hdbscan_params_list:
-            # BERTopic 인스턴스 생성
-            topic_model = BERTopic(umap_model=UMAP(**umap_params),
-                                   hdbscan_model=HDBSCAN(**hdbscan_params),
-                                   calculate_probabilities=False,
-                                   verbose=False)
-            
-            # 문서에 대한 주제 모델링 수행
-            topics, probs = topic_model.fit_transform(documents)
-            
-            # Coherence Score 계산 (여기서는 가상의 함수로 표현)
-            coherence = calculate_coherence_score(topic_model, documents, topics)
-            print(f"UMAP params: {umap_params}, HDBSCAN params: {hdbscan_params}, Coherence: {coherence}")
-            
-            # 최적의 파라미터 업데이트
-            if coherence > best_coherence:
-                best_coherence = coherence
-                best_params = {'umap': umap_params, 'hdbscan': hdbscan_params}
-    
-    print(f"Best Coherence: {best_coherence}")
-    print(f"Best Parameters: {best_params}")
 
-# 실행
-documents = df['제목'].tolist()  # 문서 리스트 준비
-run_grid_search(documents)
+    hdbscan_params = [
+        {"min_cluster_size": s, "metric": m, "min_samples": ms}
+        for s, m, ms in product([20, 30, 50], ['euclidean', 'manhattan'], [None, 5, 10])
+        ]
 
-시작
+    for umap_param in umap_params:
+        for hdbscan_param in hdbscan_params:
+            coherence = None
+            error_message = None
+            try:
+                topic_model = BERTopic(umap_model=UMAP(**umap_param), hdbscan_model=HDBSCAN(**hdbscan_param), embedding_model=model)
+                topics, _ = topic_model.fit_transform(documents, embeddings=document_embeddings)
+                topic_info = topic_model.get_topic_info()
+                topics = [[word for word, _ in topic_model.get_topic(topic)] for topic in range(len(topic_info)-1)]
+                
+                coherence = calculate_coherence_score(topics, documents)
+                print(f"UMAP Params: {umap_param}, HDBSCAN Params: {hdbscan_param}, Coherence: {coherence}")
+            except Exception as e:
+                error_message = str(e)
+                print(f"오류 발생: {e}, UMAP Params: {umap_param}, HDBSCAN Params: {hdbscan_param}")
+            
+            # 결과 적재
+            results.append({
+                "umap_params": umap_param,
+                "hdbscan_params": hdbscan_param,
+                "coherence": coherence,
+                "error": error_message
+            })
+
+    # 최고 결과 출력
+    best_result = max(results, key=lambda x: x["coherence"] if x["coherence"] is not None else -1)
+    print(f"Best Coherence: {best_result['coherence']}, Best Params: {best_result['umap_params'], best_result['hdbscan_params']}")
+
+    return results
+
+# 문서 데이터 준비
+documents = df['제목'].tolist()
+
+# 그리드 서치 실행
+results = grid_search_bertopic(documents, tokenizer, model)
+
+# 데이터 프레임으로 변환
+results_df = pd.json_normalize(results)
+
+# 중첩된 딕셔너리 키를 병합하여 새 열 이름 생성
+results_df.columns = results_df.columns.str.replace("umap_params\.", "umap_", regex=True)
+results_df.columns = results_df.columns.str.replace("hdbscan_params\.", "hdbscan_", regex=True)
+
+results_df.to_csv('D:/대학원/논문/소논문/부동산_토픽모델링/gridsearch_umap.csv', index=False, encoding='cp949')
+
 
 # 문서 임베딩 함수 정의 (배치 처리 포함):
 def embed_documents(documents, model, tokenizer, device='cuda', batch_size=16):
@@ -164,8 +211,8 @@ def embed_documents(documents, model, tokenizer, device='cuda', batch_size=16):
     return np.vstack(embeddings)
 
 # UMAP과 HDBSCAN 객체를 생성하고 BERTopic에 전달하는 방법
-umap_model = UMAP(n_neighbors=15, n_components=3, min_dist=0.0, metric='cosine')
-hdbscan_model = HDBSCAN(min_cluster_size=100, min_samples=None, metric='euclidean', prediction_data=True)
+umap_model = UMAP(n_neighbors=30, n_components=15, min_dist=0.2, metric='cosine')
+hdbscan_model = HDBSCAN(min_cluster_size=20, min_samples=None, metric='euclidean', prediction_data=True)
 
 # BERTopic 모델 초기화 및 훈련
 topic_model = BERTopic(embedding_model=lambda docs: embed_documents(docs, model, tokenizer),

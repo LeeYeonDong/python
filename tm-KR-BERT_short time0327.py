@@ -16,6 +16,7 @@ from gensim import corpora
 from konlpy.tag import Okt
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics import silhouette_score
+from itertools import product
 
 
 # GPU 사용 가능 여부 확인
@@ -31,35 +32,7 @@ start_time = time.time()
 
 # 데이터 로드
 df = pd.read_csv('D:/대학원/논문/소논문/부동산_토픽모델링/부동산_수정_df.csv', encoding='utf-8')
-#df = df.sample(n=50000) # test
-# 숫자로 시작하지 않는 '날짜' 열을 가진 관측치 추출
-new_data = df[~df['날짜'].str.match(r'^\d')]
-new_data.shape
-
-# 기존 데이터 프레임에서 해당 관측치 제거
-df = df.drop(new_data.index)
-df.shape
-
-# 언론사 관측치를 링크로 옮기기
-new_data['링크'] = new_data['언론사']
-# 날짜 관측치를 언론사로 옮기기
-new_data['언론사'] = new_data['날짜']
-# 제목에서 가장 마지막의 쉼표 뒤의 문자를 날짜로 옮기기
-new_data['날짜'] = new_data['제목'].str.extract(r',([^,]+)$')[0]
-new_data['날짜'] = new_data['날짜'].str.strip('"')
-# 제목에서 가장 마지막의 쉼표 앞의 문자만 남기기
-new_data['제목'] = new_data['제목'].str.rsplit(',', n=1).str[0]
-# 기존 데이터 프레임과 새 데이터 프레임 결합
-df = pd.concat([df, new_data], ignore_index=True)
-# 결합된 데이터 프레임을 날짜 순으로 정렬
-df['날짜'] = df['날짜'].str.replace('오후', 'PM').str.replace('오전', 'AM') # '오후'와 '오전'을 'PM'과 'AM'으로 변환
-df['날짜'] = pd.to_datetime(df['날짜'], format='%Y.%m.%d. %p %I:%M').dt.strftime('%Y-%m-%d')
-df = df.sort_values(by='날짜')
-df['날짜'] = df['날짜'].str.split(' ').str[0]
-
-# '제목' 열에서 한글만 남기기
-df['제목'] = df['제목'].apply(lambda x: re.sub(r'[^가-힣\s]', '', str(x)) if x is not None else x)
-df['제목'] = df['제목'].apply(lambda x: re.sub(r'단독', '', x))
+df = df.sample(n=50000) # test
 
 # 전처리
 stopwords_df = pd.read_csv('D:/대학원/논문/소논문/부동산_토픽모델링/stopwords_kor.csv')
@@ -99,54 +72,22 @@ model = BertModel.from_pretrained('snunlp/KR-BERT-char16424')
 #tokenizer_albert = BertTokenizerFast.from_pretrained("kykim/albert-kor-base")
 #model_albert = AlbertModel.from_pretrained("kykim/albert-kor-base")
 
-# 문서 임베딩을 생성하는 함수
-def embed_documents(documents, model, tokenizer):
-    # 여기에 문서 임베딩 생성 로직 구현
-    # 예시로는 문서를 토크나이즈하고 모델을 통해 임베딩 생성
-    pass
+# 문서 리스트 준비
+documents = df['제목'].tolist()
 
-# Grid Search 실행 함수
-def run_grid_search(documents):
-    best_coherence = -np.inf
-    best_params = None
+umap_params_list = {
+        'n_neighbors': [5, 15, 25], 
+        'n_components': [5, 10], 
+        'min_dist': [0.0, 0.1, 0.5], 
+        'metric': ['cosine', 'euclidean']
+    }
     
-    # UMAP과 HDBSCAN 파라미터 조합
-    umap_params_list = [
-        {'n_neighbors': 15, 'n_components': 5, 'min_dist': 0.0, 'metric': 'cosine'},
-        # 여기에 더 많은 UMAP 파라미터 조합 추가 가능
-    ]
-    
-    hdbscan_params_list = [
-        {'min_cluster_size': 5, 'metric': 'euclidean'},
-        # 여기에 더 많은 HDBSCAN 파라미터 조합 추가 가능
-    ]
-    
-    for umap_params in umap_params_list:
-        for hdbscan_params in hdbscan_params_list:
-            # BERTopic 인스턴스 생성
-            topic_model = BERTopic(umap_model=UMAP(**umap_params),
-                                   hdbscan_model=HDBSCAN(**hdbscan_params),
-                                   calculate_probabilities=False,
-                                   verbose=False)
-            
-            # 문서에 대한 주제 모델링 수행
-            topics, probs = topic_model.fit_transform(documents)
-            
-            # Coherence Score 계산 (여기서는 가상의 함수로 표현)
-            coherence = calculate_coherence_score(topic_model, documents, topics)
-            print(f"UMAP params: {umap_params}, HDBSCAN params: {hdbscan_params}, Coherence: {coherence}")
-            
-            # 최적의 파라미터 업데이트
-            if coherence > best_coherence:
-                best_coherence = coherence
-                best_params = {'umap': umap_params, 'hdbscan': hdbscan_params}
-    
-    print(f"Best Coherence: {best_coherence}")
-    print(f"Best Parameters: {best_params}")
+hdbscan_params_list = {
+        'min_cluster_size': [5, 10, 15], 
+        'metric': ['euclidean', 'manhattan'],
+        'min_samples' : [None, 5, 10]
+    }
 
-# 실행
-documents = df['제목'].tolist()  # 문서 리스트 준비
-run_grid_search(documents)
 
 시작
 

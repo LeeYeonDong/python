@@ -14,9 +14,6 @@ from gensim.models.coherencemodel import CoherenceModel
 from gensim.corpora.dictionary import Dictionary
 from gensim import corpora
 from konlpy.tag import Okt
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics import silhouette_score
-
 
 # GPU 사용 가능 여부 확인
 if torch.cuda.is_available():
@@ -30,8 +27,8 @@ else:
 start_time = time.time()
 
 # 데이터 로드
-df = pd.read_csv('D:/대학원/논문/소논문/부동산_토픽모델링/부동산_수정_df.csv', encoding='utf-8')
-#df = df.sample(n=50000) # test
+df = pd.read_csv('D:/대학원/논문/소논문/부동산_토픽모델링/부동산_df.csv', encoding='cp949')
+df = df.sample(n=50000) # test
 # 숫자로 시작하지 않는 '날짜' 열을 가진 관측치 추출
 new_data = df[~df['날짜'].str.match(r'^\d')]
 new_data.shape
@@ -99,56 +96,81 @@ model = BertModel.from_pretrained('snunlp/KR-BERT-char16424')
 #tokenizer_albert = BertTokenizerFast.from_pretrained("kykim/albert-kor-base")
 #model_albert = AlbertModel.from_pretrained("kykim/albert-kor-base")
 
-# 문서 임베딩을 생성하는 함수
-def embed_documents(documents, model, tokenizer):
-    # 여기에 문서 임베딩 생성 로직 구현
-    # 예시로는 문서를 토크나이즈하고 모델을 통해 임베딩 생성
-    pass
+## Grid Search
+# 1단계: Coherence Score 계산을 위한 준비
+def calculate_coherence_score(model, documents, topics):
+    """
+    Coherence Score 계산.
 
-# Grid Search 실행 함수
-def run_grid_search(documents):
+    Parameters:
+    - model: BERTopic 모델 인스턴스.
+    - documents: 원본 문서 리스트.
+    - topics: fit_transform 결과로 얻은 주제 할당 리스트.
+
+    Returns:
+    - Coherence Score.
+    """
+    # Gensim 사전 생성
+    texts = [doc.split() for doc in documents]
+    dictionary = Dictionary(texts)
+    corpus = [dictionary.doc2bow(text) for text in texts]
+
+    # 주제별 상위 단어 추출
+    topic_words = []
+    for topic_number in set(topics) - {-1}:
+        topic_words.append([word for word, _ in model.get_topic(topic_number)])
+
+    # Coherence Score 계산
+    coherence_model = CoherenceModel(topics=topic_words, texts=texts, dictionary=dictionary, corpus=corpus, coherence='c_v')
+    coherence_score = coherence_model.get_coherence()
+
+    return coherence_score
+
+# 2단계: Grid Search 실행
+def run_grid_search(documents, umap_params_list, hdbscan_params_list):
     best_coherence = -np.inf
     best_params = None
-    
-    # UMAP과 HDBSCAN 파라미터 조합
-    umap_params_list = [
-        {'n_neighbors': 15, 'n_components': 5, 'min_dist': 0.0, 'metric': 'cosine'},
-        # 여기에 더 많은 UMAP 파라미터 조합 추가 가능
-    ]
-    
-    hdbscan_params_list = [
-        {'min_cluster_size': 5, 'metric': 'euclidean'},
-        # 여기에 더 많은 HDBSCAN 파라미터 조합 추가 가능
-    ]
-    
+
     for umap_params in umap_params_list:
         for hdbscan_params in hdbscan_params_list:
-            # BERTopic 인스턴스 생성
-            topic_model = BERTopic(umap_model=UMAP(**umap_params),
-                                   hdbscan_model=HDBSCAN(**hdbscan_params),
+            # UMAP과 HDBSCAN 객체 초기화
+            umap_model = UMAP(**umap_params)
+            hdbscan_model = HDBSCAN(**hdbscan_params)
+
+            # BERTopic 모델 훈련
+            topic_model = BERTopic(embedding_model=lambda docs: embed_documents(docs, model, tokenizer),
+                                   umap_model=umap_model,
+                                   hdbscan_model=hdbscan_model,
                                    calculate_probabilities=False,
                                    verbose=False)
-            
-            # 문서에 대한 주제 모델링 수행
-            topics, probs = topic_model.fit_transform(documents)
-            
-            # Coherence Score 계산 (여기서는 가상의 함수로 표현)
+            topics, probabilities = topic_model.fit_transform(documents)
+
+            # Coherence Score 계산
             coherence = calculate_coherence_score(topic_model, documents, topics)
             print(f"UMAP params: {umap_params}, HDBSCAN params: {hdbscan_params}, Coherence: {coherence}")
-            
-            # 최적의 파라미터 업데이트
+
+            # 최적 파라미터 업데이트
             if coherence > best_coherence:
                 best_coherence = coherence
                 best_params = {'umap': umap_params, 'hdbscan': hdbscan_params}
-    
+
     print(f"Best Coherence: {best_coherence}")
     print(f"Best Parameters: {best_params}")
+    
+# 3단계: 실행
+# 예시 UMAP과 HDBSCAN 파라미터 리스트 정의
+umap_params_list = [
+    {'n_neighbors': 15, 'n_components': 5, 'min_dist': 0.0, 'metric': 'cosine'},
+    # 다른 UMAP 파라미터 조합
+]
 
-# 실행
-documents = df['제목'].tolist()  # 문서 리스트 준비
-run_grid_search(documents)
+hdbscan_params_list = [
+    {'min_cluster_size': 5, 'min_samples': None, 'metric': 'euclidean'},
+    # 다른 HDBSCAN 파라미터 조합
+]
 
-시작
+# Grid Search 실행 
+run_grid_search(df['제목'], umap_params_list, hdbscan_params_list)
 
 # 문서 임베딩 함수 정의 (배치 처리 포함):
 def embed_documents(documents, model, tokenizer, device='cuda', batch_size=16):
@@ -252,5 +274,4 @@ end_time = time.time()
 
 elapsed_time = end_time - start_time
 print(f"코드 실행 시간: {elapsed_time} 초")
-
 

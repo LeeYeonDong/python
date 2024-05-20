@@ -15,11 +15,22 @@ from tensorflow.keras.layers import Embedding, Bidirectional, LSTM, Dropout, Den
 from tensorflow.keras.optimizers import Adam
 
 
-
 # example
 df = pd.read_csv("D:/대학원/논문/소논문/부동산_감정사전/re_df.csv", encoding='cp949')
 df.columns
 df.head
+
+# 특수문자로 시작하는 단어 제거 ([, {, <, @)
+df['제목'] = df['제목'].str.replace(r'\[[^\]]*\]', '', regex=True)  # 대괄호 안의 내용 삭제
+df['제목'] = df['제목'].str.replace(r'<[^>]*>', '', regex=True)    # 꺽쇠 괄호 안의 내용 삭제
+df['제목'] = df['제목'].str.replace(r'\{[^\}]*\}', '', regex=True)  # 중괄호 안의 내용 삭제
+df['제목'] = df['제목'].str.replace(r'@[^\s]+', '', regex=True)    # @로 시작하는 단어 삭제
+# 특수 문자 제거 (문장부호 제외)
+df['제목'] = df['제목'].str.replace(r'[^\w\s,.?!\'"]', '', regex=True)
+# 한 글자 단어 제거
+df['제목'] = df['제목'].str.replace(r'\b\w\b', '', regex=True)
+# 불필요한 공백 제거
+df['제목'] = df['제목'].str.replace(r'\s+', ' ', regex=True).str.strip()
 
 df = df.sample(frac=0.3)
 
@@ -28,6 +39,14 @@ selected_df = df[df["sen_pol"] != 0]
 series = pd.Series(selected_df["sen_pol"])
 table = series.value_counts()
 table
+
+# 텍스트를 토큰화하
+def tokenize(text):
+    tokens = okt.morphs(text)  # 텍스트를 형태소 단위로 토큰화
+    return tokens
+
+# '제목' 컬럼에 대해 토큰화 및 불용어 제거 수행
+selected_df["제목"] = selected_df["제목"].apply(tokenize)
 
 title =  selected_df["제목"].str.replace("[^가-힣\s]", "", regex=True)
 polarity = selected_df["sen_pol"] # 양수 음수 이진법으로 분류해야함
@@ -54,56 +73,6 @@ print("검증 데이터 크기:", X_val.shape, y_val.shape)
 # 조기 종료 설정 (성능 향상이 멈출 경우 훈련 중지)
 early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
 
-# # 모델 함수 정의
-# def create_model():
-#     model = tf.keras.Sequential([
-#         tf.keras.layers.Embedding(input_dim=len(tokenizer.word_index) + 1, output_dim=64, input_length=max_len),
-#         tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(64)),
-#         tf.keras.layers.Dense(1, activation='sigmoid')
-#     ])
-#     model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-#     return model
-
-# # 모델 래퍼 생성
-# model = KerasClassifier(build_fn=create_model, verbose=2)
-
-
-# 과적합 방지 모델
-def create_regularized_model():
-    model = tf.keras.Sequential([
-        Embedding(input_dim=len(tokenizer.word_index) + 1, output_dim=64, input_length=max_len),
-        Bidirectional(LSTM(64, return_sequences=True, kernel_regularizer=l2(0.01))),  # L2 정규화 적용
-        Bidirectional(LSTM(64)),
-        Dense(1, activation='sigmoid', kernel_regularizer=l1(0.01))  # L1 정규화 적용
-    ])
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-    return model
-
-model = create_regularized_model()
-model.summary()
-
-# 모델 래퍼 생성
-model = KerasClassifier(build_fn=create_regularized_model, verbose=2)
-
-# 그리드 서치 파라미터 설정
-param_grid = {
-    'epochs': [5, 10, 15],  # 다양한 epochs 시도
-    'batch_size': [1, 16, 32, 64]  # 다양한 batch_size 시도
-}
-
-# 그리드 서치 수행
-grid = GridSearchCV(estimator=model, param_grid=param_grid, cv=3, verbose=2)
-grid_result = grid.fit(X_train, y_train, validation_data=(X_val, y_val), callbacks=[early_stopping], verbose=2)
-
-# # 최적 파라미터 및 결과 출력
-# print("최적 파라미터: ", grid_result.best_params_)
-# print("최적 점수: ", grid_result.best_score_)
-
-#>>> print("최적 파라미터: ", grid_result.best_params_)
-#최적 파라미터:  {'batch_size': 64, 'epochs': 5}
-#>>> print("최적 점수: ", grid_result.best_score_)
-#최적 점수:  0.9392167329788208
-
 # Learning Rate 조절
 def create_regularized_model(dropout_rate=0.1, learning_rate=0.001, lamda=0.01):
     print(f"dropout_rate={dropout_rate}, learning_rate={learning_rate}, lamda={lamda}")  # 현재 설정 출력
@@ -117,20 +86,6 @@ def create_regularized_model(dropout_rate=0.1, learning_rate=0.001, lamda=0.01):
     optimizer = Adam(learning_rate=learning_rate)
     model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
     return model
-
-# def create_regularized_model(dropout_rate=0.1, learning_rate=0.001, lamda=0.01):
-#     print(f"dropout_rate={dropout_rate}, learning_rate={learning_rate}, lamda={lamda}")  # 현재 설정 출력
-#     model = Sequential([
-#         Embedding(input_dim=len(tokenizer.word_index) + 1, output_dim=64, input_length=max_len),
-#         Bidirectional(LSTM(64, return_sequences=True, kernel_regularizer=l2(lamda))),
-#         Dropout(dropout_rate),
-#         Bidirectional(LSTM(64)),
-#         Dropout(dropout_rate),
-#         Dense(1, activation='sigmoid', kernel_regularizer=l1(lamda))
-#     ])
-#     optimizer = Adam(learning_rate=learning_rate)
-#     model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
-#     return model
 
 model = create_regularized_model()
 model = KerasClassifier(build_fn=create_regularized_model, verbose=2)
@@ -152,45 +107,108 @@ grid_result = grid.fit(X_train, y_train, validation_data=(X_val, y_val), callbac
 print("최적 파라미터: ", grid_result.best_params_)
 print("최적 점수: ", grid_result.best_score_)
 # >>> print("최적 파라미터: ", grid_result.best_params_)
-# 최적 파라미터:  {'batch_size': 16, 'dropout_rate': 0.1, 'epochs': 5, 'lamda': 0.01, 'learning_rate': 0.0005}
+# 최적 파라미터:  {'batch_size': 16, 'dropout_rate': 0.1, 'epochs': 15, 'lamda': 0.01, 'learning_rate': 0.001}
 # >>> print("최적 점수: ", grid_result.best_score_)
-# 최적 점수:  0.9086942871411642
+# 최적 점수:  0.9147986769676208
+
+# GridSearchCV 결과를 DataFrame으로 변환
+results = pd.DataFrame(grid_result.cv_results_)
+
+# 지정된 경로에 DataFrame을 CSV 파일로 저장
+file_path = "D:\\대학원\\논문\\소논문\\부동산_감정사전\\GridSearchCV0425-1.csv"
+results.to_csv(file_path, index=False, encoding='cp949')
+
 
 # 시각화
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
-# GridSearchCV 결과를 DataFrame으로 변환
-results = pd.DataFrame(grid_result.cv_results_)
-
 # Heatmap을 사용하여 2개의 하이퍼파라미터 ('batch_size'와 'epochs')에 따른 성능 시각화
 # 'mean_test_score'를 이용하여 평균 테스트 점수를 기준으로 시각화 진행
-if 'param_batch_size' in results.columns and 'param_epochs' in results.columns:
-    # pivot_table 메소드를 사용하여 적절한 형태의 테이블 생성
-    pivot_table = results.pivot(index='param_batch_size', columns='param_epochs', values='mean_test_score')
-    plt.figure(figsize=(10, 6))
-    # sns.heatmap 함수를 사용하여 Heatmap 생성
-    sns.heatmap(pivot_table, annot=True, cmap='YlGnBu', fmt='.4f')
-    plt.title('GridSearchCV Mean Test Scores (Heatmap)')
-    plt.xlabel('Epochs')
-    plt.ylabel('Batch Size')
-    plt.show()
+# if 'param_batch_size' in results.columns and 'param_epochs' in results.columns:
+#     # pivot_table 메소드를 사용하여 적절한 형태의 테이블 생성
+#     pivot_table = results.pivot(index='param_batch_size', columns='param_epochs', values='mean_test_score')
+#     plt.figure(figsize=(10, 6))
+#     # sns.heatmap 함수를 사용하여 Heatmap 생성
+#     sns.heatmap(pivot_table, annot=True, cmap='YlGnBu', fmt='.4f')
+#     plt.title('GridSearchCV Mean Test Scores (Heatmap)')
+#     plt.xlabel('Epochs')
+#     plt.ylabel('Batch Size')
+#     plt.show()
 
-# 선 그래프를 사용하여 'epochs'에 따른 성능 시각화
-# 'epochs' 하이퍼파라미터를 x축, 'mean_test_score'를 y축으로 사용
-if 'param_epochs' in results.columns:
-    plt.figure(figsize=(10, 6))
-    # sns.lineplot 함수를 사용하여 선 그래프 생성
-    sns.lineplot(x=results['param_epochs'].astype(int), y='mean_test_score', data=results, marker='o')
-    plt.title('Mean Test Scores vs. Epochs (Line Plot)')
-    plt.xlabel('Epochs')
-    plt.ylabel('Mean Test Score')
-    plt.grid(True)
-    plt.show()
+# # 선 그래프를 사용하여 'epochs'에 따른 성능 시각화
+# # 'epochs' 하이퍼파라미터를 x축, 'mean_test_score'를 y축으로 사용
+# if 'param_epochs' in results.columns:
+#     plt.figure(figsize=(10, 6))
+#     # sns.lineplot 함수를 사용하여 선 그래프 생성
+#     sns.lineplot(x=results['param_epochs'].astype(int), y='mean_test_score', data=results, marker='o')
+#     plt.title('Mean Test Scores vs. Epochs (Line Plot)')
+#     plt.xlabel('Epochs')
+#     plt.ylabel('Mean Test Score')
+#     plt.grid(True)
+#     plt.show()
+
+# 전체 데이터로 학습 시작
+df = pd.read_csv("D:/대학원/논문/소논문/부동산_감정사전/re_df.csv", encoding='cp949')
+df.columns
+df.head
+
+# 특수문자로 시작하는 단어 제거 ([, {, <, @)
+df['제목'] = df['제목'].str.replace(r'\[[^\]]*\]', '', regex=True)  # 대괄호 안의 내용 삭제
+df['제목'] = df['제목'].str.replace(r'<[^>]*>', '', regex=True)    # 꺽쇠 괄호 안의 내용 삭제
+df['제목'] = df['제목'].str.replace(r'\{[^\}]*\}', '', regex=True)  # 중괄호 안의 내용 삭제
+df['제목'] = df['제목'].str.replace(r'@[^\s]+', '', regex=True)    # @로 시작하는 단어 삭제
+# 특수 문자 제거 (문장부호 제외)
+df['제목'] = df['제목'].str.replace(r'[^\w\s,.?!\'"]', '', regex=True)
+# 한 글자 단어 제거
+df['제목'] = df['제목'].str.replace(r'\b\w\b', '', regex=True)
+# 불필요한 공백 제거
+df['제목'] = df['제목'].str.replace(r'\s+', ' ', regex=True).str.strip()
+
+selected_df = df[df["sen_pol"] != 0]
+
+series = pd.Series(selected_df["sen_pol"])
+table = series.value_counts()
+table
+
+# 텍스트를 토큰화하
+def tokenize(text):
+    tokens = okt.morphs(text)  # 텍스트를 형태소 단위로 토큰화
+    return tokens
+
+# '제목' 컬럼에 대해 토큰화
+selected_df["제목"] = selected_df["제목"].apply(tokenize)
+
+title =  selected_df["제목"].str.replace("[^가-힣\s]", "", regex=True)
+polarity = selected_df["sen_pol"] # 양수 음수 이진법으로 분류해야함
+
+# text data tokenize and to sequence
+tokenizer = Tokenizer()
+tokenizer.fit_on_texts(title)
+sequences = tokenizer.texts_to_sequences(title)
+
+# sequence pading
+max_len = max(len(seq) for seq in sequences)
+padded_sq = pad_sequences(sequences, maxlen = max_len, padding = "post")
 
 
-def create_regularized_model(dropout_rate=0.1, learning_rate=0.0005, lamda=0.01):
+# 데이터 분리 (80% 훈련 데이터, 20% 검증 데이터)
+X = np.array(padded_sq)
+y = np.array(polarity)
+
+X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+print("훈련 데이터 크기:", X_train.shape, y_train.shape)
+print("검증 데이터 크기:", X_val.shape, y_val.shape)
+# >>> print("훈련 데이터 크기:", X_train.shape, y_train.shape)
+# 훈련 데이터 크기: (68763, 24) (68763,)
+# >>> print("검증 데이터 크기:", X_val.shape, y_val.shape)
+# 검증 데이터 크기: (17191, 24) (17191,)
+
+# 조기 종료 설정 (성능 향상이 멈출 경우 훈련 중지)
+early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+
+def create_regularized_model(dropout_rate=0.1, learning_rate=0.001, lamda=0.01):
     print(f"dropout_rate={dropout_rate}, learning_rate={learning_rate}, lamda={lamda}")  # 현재 설정 출력
     model = Sequential([
         Embedding(input_dim=len(tokenizer.word_index) + 1, output_dim=64, input_length=max_len),
@@ -203,9 +221,10 @@ def create_regularized_model(dropout_rate=0.1, learning_rate=0.0005, lamda=0.01)
     model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
+model = KerasClassifier(build_fn=create_regularized_model, verbose=2)
 
 # model training
-model_fit = model.fit(X, y, epochs=5, batch_size = 16,  verbose=2, validation_split=0.2, callbacks=[early_stopping])
+model_fit = model.fit(X, y, epochs=15, batch_size = 16,  verbose=2, validation_split=0.2, callbacks=[early_stopping])
 model_fit.history
 
 # {'loss': [0.32203713059425354, 0.002950088819488883, -0.11151300370693207, -0.17315135896205902, -0.21725548803806305], 'accuracy': [0.8669446706771851, 0.9712941646575928, 0.9795374274253845, 0.9797313809394836, 
@@ -276,5 +295,5 @@ print(sentiment_dict)
 df_sentiment = pd.DataFrame(list(sentiment_dict.items()), columns=['Word', 'Sentiment_Score'])
 
 # 지정된 경로에 DataFrame을 CSV 파일로 저장
-file_path = "D:\\대학원\\논문\\소논문\\부동산_감정사전\\sentiment_scores3.csv"
+file_path = "D:\\대학원\\논문\\소논문\\부동산_감정사전\\sentiment_scores_문장부호 포함_0426.csv"
 df_sentiment.to_csv(file_path, index=False, encoding='cp949')
